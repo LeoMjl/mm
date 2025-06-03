@@ -3,17 +3,60 @@ import platform
 from opensdkmodel import OpenAIModel
 import sys
 import subprocess
-# import dotenv # 这行可以移除，因为下面直接 from dotenv import ...
 from dotenv import load_dotenv # 确保这行在最顶部且没有被注释或条件化
 import distro
 import pyperclip
 from termcolor import colored
 from colorama import init
 
+def get_current_shell():
+    """
+    检测当前使用的shell类型
+    返回: shell类型字符串 (powershell.exe, cmd.exe, bash等)
+    """
+    # 在Windows系统上进行shell检测
+    if platform.system() == "Windows":
+        # 检查PSModulePath环境变量，这是PowerShell特有的
+        if os.environ.get("PSModulePath"):
+            return "powershell.exe"
+        # 检查是否有PowerShell相关的环境变量
+        elif os.environ.get("POWERSHELL_DISTRIBUTION_CHANNEL"):
+            return "powershell.exe"
+        # 检查父进程名称来判断当前shell
+        else:
+            try:
+                import psutil
+                parent = psutil.Process().parent()
+                if parent and parent.name().lower() in ["powershell.exe", "pwsh.exe"]:
+                    return "powershell.exe"
+                elif parent and parent.name().lower() == "cmd.exe":
+                    return "cmd.exe"
+            except (ImportError, Exception):
+                # 如果psutil不可用或出错，使用环境变量检测
+                pass
+            
+            # 最后的fallback：检查COMSPEC和一些启发式方法
+            comspec = os.environ.get("COMSPEC", "")
+            if "cmd.exe" in comspec.lower():
+                return "cmd.exe"
+            else:
+                # 默认返回PowerShell（Windows 10+的默认shell）
+                return "powershell.exe"
+    else:
+        # 非Windows系统，使用SHELL环境变量
+        return os.environ.get("SHELL", "bash")
+
 # 获取系统提示词
 def get_system_prompt(shell):
-  # 将 prompt.txt 的内容直接嵌入
-  system_prompt_template = """你是mm，一个将自然语言转换为{shell}命令的引擎，专为{os}系统设计。你是{os}系统下{shell}命令的专家，能够将最后的问题转换为有效的命令行语法。
+    """
+    根据shell类型生成相应的系统提示词
+    参数:
+        shell: shell类型 (powershell.exe, cmd.exe, bash等)
+    返回:
+        格式化的系统提示词字符串
+    """
+    # 将 prompt.txt 的内容直接嵌入
+    system_prompt_template = """你是mm，一个将自然语言转换为{shell}命令的引擎，专为{os}系统设计。你是{os}系统下{shell}命令的专家，能够将最后的问题转换为有效的命令行语法。
 
 规则：
 * 永远不要使用代码风格的markdown输出
@@ -40,9 +83,9 @@ def get_system_prompt(shell):
 
 问题：
 """
-  system_prompt = system_prompt_template.replace("{shell}", shell)
-  system_prompt = system_prompt.replace("{os}", get_os_friendly_name())
-  return system_prompt
+    system_prompt = system_prompt_template.replace("{shell}", shell)
+    system_prompt = system_prompt.replace("{os}", get_os_friendly_name())
+    return system_prompt
 
 # 确保提示以问号结尾
 def ensure_prompt_is_question(prompt):
@@ -52,36 +95,40 @@ def ensure_prompt_is_question(prompt):
 
 # 打印使用说明
 def print_usage():
-  print("mm v0.5 - by @wunderwuzzi23 (June 29, 2024)")
-  print()
-  print("用法: mm [-a] 列出当前目录信息")
-  print("参数: -a: 在执行命令前提示用户确认(仅在安全模式关闭时有用)")
-  print()
-  print("当前配置(.env):")
-  print("* API          : " + str(os.getenv("OPENAI_API_BASE", "N/A")))
-  print("* 模型        : " + str(os.getenv("MODEL_NAME", "N/A")))
+    """
+    打印程序使用说明和当前配置信息
+    """
+    print("mm v0.5 - by @wunderwuzzi23 (June 29, 2024)")
+    print()
+    print("用法: mm [-a] 列出当前目录信息")
+    print("参数: -a: 在执行命令前提示用户确认(仅在安全模式关闭时有用)")
+    print("支持的Shell: PowerShell, CMD, Bash")
+    print()
+    print("当前配置(.env):")
+    print("* API          : " + str(os.getenv("OPENAI_API_BASE", "N/A")))
+    print("* 模型        : " + str(os.getenv("MODEL_NAME", "N/A")))
   
-  model_temp = os.getenv("MODEL_TEMPERATURE", "0.7")
-  try:
-    print("* 温度系数  : " + str(float(model_temp)))
-  except ValueError:
-    print(f"* 温度系数  : {model_temp} (无法解析为浮点数)")
+    model_temp = os.getenv("MODEL_TEMPERATURE", "0.7")
+    try:
+      print("* 温度系数  : " + str(float(model_temp)))
+    except ValueError:
+      print(f"* 温度系数  : {model_temp} (无法解析为浮点数)")
 
-  max_tokens_env = os.getenv("MODEL_MAX_TOKENS", "2048")
-  try:
-    print("* 最大令牌数  : " + str(int(max_tokens_env)))
-  except ValueError:
-    print(f"* 最大令牌数  : {max_tokens_env} (无法解析为整数)")
+    max_tokens_env = os.getenv("MODEL_MAX_TOKENS", "2048")
+    try:
+      print("* 最大令牌数  : " + str(int(max_tokens_env)))
+    except ValueError:
+      print(f"* 最大令牌数  : {max_tokens_env} (无法解析为整数)")
 
-  safety_env = os.getenv("SAFETY", "1").lower()
-  safety_bool = safety_env in ("true", "1")
-  print("* 安全模式       : " + str(safety_bool))
-  
-  modify_env = os.getenv("MODIFY", "1").lower()
-  modify_bool = modify_env in ("true", "1")
-  print("* 修改模式       : " + str(modify_bool))
+    safety_env = os.getenv("SAFETY", "1").lower()
+    safety_bool = safety_env in ("true", "1")
+    print("* 安全模式       : " + str(safety_bool))
+    
+    modify_env = os.getenv("MODIFY", "1").lower()
+    modify_bool = modify_env in ("true", "1")
+    print("* 修改模式       : " + str(modify_bool))
 
-  print("* 命令颜色: " + str(os.getenv("SUGGESTED_COMMAND_COLOR", "yellow")))
+    print("* 命令颜色: " + str(os.getenv("SUGGESTED_COMMAND_COLOR", "yellow")))
 
 # 获取操作系统友好名称
 def get_os_friendly_name():
@@ -168,30 +215,106 @@ def prompt_user_for_action(ask_flag, response):
   if os.getenv("SAFETY", "0").lower() in ("false", "0"):
      return "Y"
 
-def eval_user_intent_and_execute(client, user_input, command, shell, ask_flag):
-  if user_input.upper() not in ["", "Y", "C", "M"]:
-    print("未执行任何操作。")
-    return
-  if user_input.upper() == "Y" or user_input == "":
-    if shell == "powershell.exe":
-      subprocess.run([shell, "/c", command], shell=False)  
-    else: 
-      subprocess.run([shell, "-c", command], shell=False)
-  if os.getenv("MODIFY", "0").lower() in ("true", "1") and user_input.upper() == "M":
-    print("修改提示: ", end = '')
-    modded_query = input()
-    modded_response = chat_completion(client, modded_query, shell)
-    check_for_issue(modded_response)
-    check_for_markdown(modded_response)
-    user_intent = prompt_user_for_action(ask_flag, modded_response)
-    print()
-    eval_user_intent_and_execute(client, user_intent, modded_response, shell, ask_flag)
-  if user_input.upper() == "C":
-      if os.name == "posix" and missing_posix_display():
-        if get_os_friendly_name() != "Darwin/macOS":
-          return
-      pyperclip.copy(command) 
-      print("已将命令复制到剪贴板。")
+def execute_command_with_error_handling(client, command, shell, ask_flag, original_query=None, retry_count=0):
+    """
+    执行命令并处理错误，如果命令失败则重新生成
+    参数:
+        client: OpenAIModel实例
+        command: 要执行的命令
+        shell: shell类型
+        ask_flag: 是否强制询问标志
+        original_query: 原始用户查询
+        retry_count: 重试次数
+    """
+    max_retries = 2  # 最大重试次数
+    
+    try:
+        print(colored(f"正在执行命令: {command}", "cyan"))
+        
+        if shell == "powershell.exe":
+            result = subprocess.run([shell, "-Command", command], 
+                                  shell=False, capture_output=True, text=True, timeout=30)
+        elif shell == "cmd.exe":
+            result = subprocess.run([shell, "/c", command], 
+                                  shell=False, capture_output=True, text=True, timeout=30)
+        else: 
+            result = subprocess.run([shell, "-c", command], 
+                                  shell=False, capture_output=True, text=True, timeout=30)
+        
+        # 检查命令执行结果
+        if result.returncode == 0:
+            print(colored("命令执行成功！", "green"))
+            if result.stdout.strip():
+                print("输出:")
+                print(result.stdout)
+        else:
+            print(colored(f"命令执行失败，返回码: {result.returncode}", "red"))
+            error_message = result.stderr.strip() if result.stderr else "未知错误"
+            print(colored(f"错误信息: {error_message}", "red"))
+            
+            # 如果有原始查询且重试次数未超限，尝试重新生成命令
+            if original_query and retry_count < max_retries:
+                print(colored(f"\n尝试重新生成命令 (第{retry_count + 1}次重试)...", "yellow"))
+                
+                # 构建包含错误信息的新查询
+                error_context = f"之前的命令 '{command}' 执行失败，错误信息: {error_message}。请生成一个修正后的命令来完成以下任务: {original_query}"
+                
+                # 重新调用模型生成命令
+                new_response = chat_completion(client, error_context, shell)
+                check_for_issue(new_response)
+                check_for_markdown(new_response)
+                
+                print(colored(f"\n重新生成的命令: {new_response}", "yellow"))
+                user_choice = input("执行重新生成的命令? [Y]是 [n]否 [c]复制到剪贴板 ==> ").strip()
+                
+                if user_choice.upper() in ["", "Y"]:
+                    return execute_command_with_error_handling(client, new_response, shell, ask_flag, original_query, retry_count + 1)
+                elif user_choice.upper() == "C":
+                    pyperclip.copy(new_response)
+                    print("已将重新生成的命令复制到剪贴板。")
+                    return
+            else:
+                if retry_count >= max_retries:
+                    print(colored(f"已达到最大重试次数({max_retries})，停止重试。", "red"))
+                    
+    except subprocess.TimeoutExpired:
+        print(colored("命令执行超时（30秒），已终止。", "red"))
+    except KeyboardInterrupt:
+        print(colored("\n用户中断了命令执行。", "yellow"))
+    except Exception as e:
+        print(colored(f"执行命令时发生错误: {e}", "red"))
+
+def eval_user_intent_and_execute(client, user_input, command, shell, ask_flag, original_query=None):
+    """
+    根据用户意图执行相应操作
+    参数:
+        client: OpenAIModel实例
+        user_input: 用户输入的选择
+        command: 要执行的命令
+        shell: shell类型
+        ask_flag: 是否强制询问标志
+        original_query: 原始用户查询（用于错误重试）
+    """
+    if user_input.upper() not in ["", "Y", "C", "M"]:
+        print("未执行任何操作。")
+        return
+    if user_input.upper() == "Y" or user_input == "":
+        execute_command_with_error_handling(client, command, shell, ask_flag, original_query)
+    if os.getenv("MODIFY", "0").lower() in ("true", "1") and user_input.upper() == "M":
+      print("修改提示: ", end = '')
+      modded_query = input()
+      modded_response = chat_completion(client, modded_query, shell)
+      check_for_issue(modded_response)
+      check_for_markdown(modded_response)
+      user_intent = prompt_user_for_action(ask_flag, modded_response)
+      print()
+      eval_user_intent_and_execute(client, user_intent, modded_response, shell, ask_flag, modded_query)
+    if user_input.upper() == "C":
+        if os.name == "posix" and missing_posix_display():
+          if get_os_friendly_name() != "Darwin/macOS":
+            return
+        pyperclip.copy(command) 
+        print("已将命令复制到剪贴板。")
 
 def get_executable_dir():
     """获取可执行文件或脚本所在的目录。"""
@@ -221,7 +344,7 @@ if os.path.exists(env_path_executable_dir):
         else:
             raise EnvironmentError("OPENAI_API_KEY not configured correctly.")
     client = OpenAIModel()
-    shell = os.environ.get("SHELL", "powershell.exe")
+    shell = get_current_shell()
 elif __name__ == "__main__": # 只有在直接运行时，如果可执行文件目录没有.env，才尝试从CWD加载并执行后续逻辑
     # 如果可执行文件/脚本目录没有 .env，则尝试从当前工作目录加载（兼容旧行为）
     load_dotenv() # 这里也需要 load_dotenv
@@ -236,7 +359,7 @@ elif __name__ == "__main__": # 只有在直接运行时，如果可执行文件�
         sys.exit(1)
 
     client = OpenAIModel()
-    shell = os.environ.get("SHELL", "powershell.exe") # 默认为 powershell.exe
+    shell = get_current_shell() # 默认为 powershell.exe
     command_start_idx = 1     # 问题参数从哪个argv索引开始
     ask_flag = False           # 安全开关-a命令行参数
     if len(sys.argv) < 2:
@@ -291,7 +414,7 @@ if __name__ == "__main__":
       sys.exit(1)
 
   client = OpenAIModel()
-  shell = os.environ.get("SHELL", "powershell.exe")
+  shell = get_current_shell()
   # --- 结束回退 --- 
 
   command_start_idx = 1     # 问题参数从哪个argv索引开始
@@ -310,5 +433,5 @@ if __name__ == "__main__":
   check_for_markdown(result)
   users_intent = prompt_user_for_action(ask_flag, result)
   print()
-  eval_user_intent_and_execute(client, users_intent, result, shell, ask_flag)
+  eval_user_intent_and_execute(client, users_intent, result, shell, ask_flag, user_prompt)
   

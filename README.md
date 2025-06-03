@@ -6,7 +6,7 @@
 
 *   自然语言转命令行：用日常语言描述您的需求。
 *   多平台支持：可在 Windows, Linux, macOS 上运行。
-*   Shell 适应性：根据当前 Shell (如 PowerShell, bash) 生成相应命令。
+*   Shell 适应性：根据当前 Shell (如 PowerShell, CMD, bash) 生成相应命令。
 *   安全交互：默认在执行命令前请求用户确认 (可配置)。
 *   命令修改：允许用户在 AI 生成命令后修改原始提问并重新生成。
 *   剪贴板复制：方便地将生成的命令复制到剪贴板。
@@ -117,7 +117,7 @@
 
 ## 使用方法
 
-安装并正确配置 `.env` 文件后 (确保 `OPENAI_API_KEY` 已设置)，打开您的终端 (PowerShell, CMD, Bash 等)，然后输入：
+安装并正确配置 `.env` 文件后 (确保 `OPENAI_API_KEY` 已设置)，打开您的终端 (PowerShell, CMD, Bash 等)。程序会自动检测当前使用的Shell环境并生成相应的命令，然后输入：
 
 **关于 `.env` 文件的加载位置：**
 `mm` 会按以下顺序查找并加载 `.env` 文件：
