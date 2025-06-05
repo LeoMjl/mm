@@ -256,8 +256,32 @@ def execute_command_with_error_handling(client, command, shell, ask_flag, origin
             if original_query and retry_count < max_retries:
                 print(colored(f"\n尝试重新生成命令 (第{retry_count + 1}次重试)...", "yellow"))
                 
-                # 构建包含错误信息的新查询
-                error_context = f"之前的命令 '{command}' 执行失败，错误信息: {error_message}。请生成一个修正后的命令来完成以下任务: {original_query}"
+                # 构建包含错误信息和重试历史的新查询
+                retry_hints = [
+                    "请尝试使用不同的参数或方法",
+                    "考虑使用替代命令或工具", 
+                    "请检查命令语法是否正确",
+                    "尝试更简单或更直接的方法",
+                    "考虑分步骤执行任务"
+                ]
+                
+                # 获取完整的错误信息（包括stdout和stderr）
+                full_error = ""
+                if result.stderr:
+                    full_error += f"错误输出: {result.stderr.strip()}\n"
+                if result.stdout:
+                    full_error += f"标准输出: {result.stdout.strip()}\n"
+                if not full_error:
+                    full_error = f"命令返回码: {result.returncode}，无详细错误信息\n"
+                
+                error_context = f"""第{retry_count + 1}次重试：
+之前尝试的命令: '{command}'
+执行结果: 失败
+{full_error}
+原始任务: {original_query}
+
+重要提示: {retry_hints[retry_count % len(retry_hints)]}
+请生成一个完全不同的命令来完成任务，避免重复之前失败的方法。"""
                 
                 # 重新调用模型生成命令
                 new_response = chat_completion(client, error_context, shell)
@@ -265,6 +289,11 @@ def execute_command_with_error_handling(client, command, shell, ask_flag, origin
                 check_for_markdown(new_response)
                 
                 print(colored(f"\n重新生成的命令: {new_response}", "yellow"))
+                
+                # 检查是否生成了相同的命令
+                if new_response.strip() == command.strip():
+                    print(colored("⚠️  警告: 生成了相同的命令，这可能不会解决问题。", "yellow"))
+                
                 user_choice = input("执行重新生成的命令? [Y]是 [n]否 [c]复制到剪贴板 ==> ").strip()
                 
                 if user_choice.upper() in ["", "Y"]:
