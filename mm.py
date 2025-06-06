@@ -1,6 +1,7 @@
 import os
 import platform
 from opensdkmodel import OpenAIModel
+from command_proxy import CommandProxy
 import sys
 import subprocess
 from dotenv import load_dotenv # 确保这行在最顶部且没有被注释或条件化
@@ -215,9 +216,9 @@ def prompt_user_for_action(ask_flag, response):
   if os.getenv("SAFETY", "0").lower() in ("false", "0"):
      return "Y"
 
-def execute_command_with_error_handling(client, command, shell, ask_flag, original_query=None, retry_count=0):
+def execute_command_with_error_handling(client, command, shell, ask_flag, original_query=None, retry_count=0, command_proxy=None):
     """
-    执行命令并处理错误，如果命令失败则重新生成
+    使用CommandProxy执行命令并处理错误，保持终端交互性
     参数:
         client: OpenAIModel实例
         command: 要执行的命令
@@ -225,36 +226,27 @@ def execute_command_with_error_handling(client, command, shell, ask_flag, origin
         ask_flag: 是否强制询问标志
         original_query: 原始用户查询
         retry_count: 重试次数
+        command_proxy: CommandProxy实例，如果为None则创建新实例
     """
     max_retries = 2  # 最大重试次数
     
+    # 如果没有提供command_proxy，创建一个新的
+    if command_proxy is None:
+        command_proxy = CommandProxy()
+    
     try:
-        print(colored(f"正在执行命令: {command}", "cyan"))
-        
-        if shell == "powershell.exe":
-            result = subprocess.run([shell, "-Command", command], 
-                                  shell=False, capture_output=True, text=True, timeout=30)
-        elif shell == "cmd.exe":
-            result = subprocess.run([shell, "/c", command], 
-                                  shell=False, capture_output=True, text=True, timeout=30)
-        else: 
-            result = subprocess.run([shell, "-c", command], 
-                                  shell=False, capture_output=True, text=True, timeout=30)
+        # 使用CommandProxy执行命令（保持交互性）
+        result = command_proxy.execute_command_with_pty(command, shell)
         
         # 检查命令执行结果
-        if result.returncode == 0:
-            print(colored("命令执行成功！", "green"))
-            if result.stdout.strip():
-                print("输出:")
-                print(result.stdout)
+        if result['success']:
+            print(colored("\n命令执行成功！", "green"))
         else:
-            print(colored(f"命令执行失败，返回码: {result.returncode}", "red"))
-            error_message = result.stderr.strip() if result.stderr else "未知错误"
-            print(colored(f"错误信息: {error_message}", "red"))
+            print(colored(f"\n命令执行失败，返回码: {result['exit_code']}", "red"))
             
-            # 如果有原始查询且重试次数未超限，尝试重新生成命令
-            if original_query and retry_count < max_retries:
-                print(colored(f"\n尝试重新生成命令 (第{retry_count + 1}次重试)...", "yellow"))
+            # 如果有原始查询且重试次数未超限，且CommandProxy建议重试
+            if original_query and retry_count < max_retries and command_proxy.should_retry():
+                print(colored(f"\n检测到命令执行失败，尝试重新生成命令 (第{retry_count + 1}次重试)...", "yellow"))
                 
                 # 构建包含错误信息和重试历史的新查询
                 retry_hints = [
@@ -265,19 +257,15 @@ def execute_command_with_error_handling(client, command, shell, ask_flag, origin
                     "考虑分步骤执行任务"
                 ]
                 
-                # 获取完整的错误信息（包括stdout和stderr）
-                full_error = ""
-                if result.stderr:
-                    full_error += f"错误输出: {result.stderr.strip()}\n"
-                if result.stdout:
-                    full_error += f"标准输出: {result.stdout.strip()}\n"
-                if not full_error:
-                    full_error = f"命令返回码: {result.returncode}，无详细错误信息\n"
+                # 从CommandProxy获取详细的输出信息
+                last_output = command_proxy.get_last_output()
                 
                 error_context = f"""第{retry_count + 1}次重试：
 之前尝试的命令: '{command}'
 执行结果: 失败
-{full_error}
+详细输出信息:
+{last_output}
+
 原始任务: {original_query}
 
 重要提示: {retry_hints[retry_count % len(retry_hints)]}
@@ -297,7 +285,7 @@ def execute_command_with_error_handling(client, command, shell, ask_flag, origin
                 user_choice = input("执行重新生成的命令? [Y]是 [n]否 [c]复制到剪贴板 ==> ").strip()
                 
                 if user_choice.upper() in ["", "Y"]:
-                    return execute_command_with_error_handling(client, new_response, shell, ask_flag, original_query, retry_count + 1)
+                    return execute_command_with_error_handling(client, new_response, shell, ask_flag, original_query, retry_count + 1, command_proxy)
                 elif user_choice.upper() == "C":
                     pyperclip.copy(new_response)
                     print("已将重新生成的命令复制到剪贴板。")
@@ -305,15 +293,15 @@ def execute_command_with_error_handling(client, command, shell, ask_flag, origin
             else:
                 if retry_count >= max_retries:
                     print(colored(f"已达到最大重试次数({max_retries})，停止重试。", "red"))
+                elif not command_proxy.should_retry():
+                    print(colored("命令执行完成，无需重试。", "green"))
                     
-    except subprocess.TimeoutExpired:
-        print(colored("命令执行超时（30秒），已终止。", "red"))
     except KeyboardInterrupt:
         print(colored("\n用户中断了命令执行。", "yellow"))
     except Exception as e:
         print(colored(f"执行命令时发生错误: {e}", "red"))
 
-def eval_user_intent_and_execute(client, user_input, command, shell, ask_flag, original_query=None):
+def eval_user_intent_and_execute(client, user_input, command, shell, ask_flag, original_query=None, command_proxy=None):
     """
     根据用户意图执行相应操作
     参数:
@@ -323,12 +311,17 @@ def eval_user_intent_and_execute(client, user_input, command, shell, ask_flag, o
         shell: shell类型
         ask_flag: 是否强制询问标志
         original_query: 原始用户查询（用于错误重试）
+        command_proxy: CommandProxy实例
     """
+    # 如果没有提供command_proxy，创建一个新的
+    if command_proxy is None:
+        command_proxy = CommandProxy()
+        
     if user_input.upper() not in ["", "Y", "C", "M"]:
         print("未执行任何操作。")
         return
     if user_input.upper() == "Y" or user_input == "":
-        execute_command_with_error_handling(client, command, shell, ask_flag, original_query)
+        execute_command_with_error_handling(client, command, shell, ask_flag, original_query, 0, command_proxy)
     if os.getenv("MODIFY", "0").lower() in ("true", "1") and user_input.upper() == "M":
       print("修改提示: ", end = '')
       modded_query = input()
@@ -337,7 +330,7 @@ def eval_user_intent_and_execute(client, user_input, command, shell, ask_flag, o
       check_for_markdown(modded_response)
       user_intent = prompt_user_for_action(ask_flag, modded_response)
       print()
-      eval_user_intent_and_execute(client, user_intent, modded_response, shell, ask_flag, modded_query)
+      eval_user_intent_and_execute(client, user_intent, modded_response, shell, ask_flag, modded_query, command_proxy)
     if user_input.upper() == "C":
         if os.name == "posix" and missing_posix_display():
           if get_os_friendly_name() != "Darwin/macOS":
@@ -457,10 +450,13 @@ if __name__ == "__main__":
   arguments = sys.argv[command_start_idx:]
   user_prompt = " ".join(arguments)
   
+  # 创建CommandProxy实例
+  command_proxy = CommandProxy()
+  
   result = chat_completion(client, user_prompt, shell)
   check_for_issue(result)
   check_for_markdown(result)
   users_intent = prompt_user_for_action(ask_flag, result)
   print()
-  eval_user_intent_and_execute(client, users_intent, result, shell, ask_flag, user_prompt)
+  eval_user_intent_and_execute(client, users_intent, result, shell, ask_flag, user_prompt, command_proxy)
   
