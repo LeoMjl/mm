@@ -2,6 +2,7 @@ import os
 import platform
 from opensdkmodel import OpenAIModel
 from command_proxy import CommandProxy
+from command_cache import get_cache
 import sys
 import subprocess
 from dotenv import load_dotenv # 确保这行在最顶部且没有被注释或条件化
@@ -143,19 +144,32 @@ def get_os_friendly_name():
   else:
     return os_name
 
-def chat_completion(client, query, shell):
+def chat_completion(client, query, shell, use_cache=True):
     """
-    调用模型进行对话，所有模型参数均从.env文件读取。
+    调用模型进行对话，集成命令缓存功能。
     参数:
         client: OpenAIModel实例
         query: 用户输入的自然语言
         shell: 当前shell类型
+        use_cache: 是否使用缓存（默认True）
     返回:
         模型生成的回复内容
     """
     if query == "":
         print ("未指定用户提示。")
         sys.exit(-1)
+    
+    # 获取缓存实例
+    cache = get_cache()
+    
+    # 检查是否启用缓存且不是重试查询
+    if use_cache and not _is_retry_query(query):
+        # 尝试从缓存获取命令
+        cached_command = cache.get_command(query, shell)
+        if cached_command:
+            return cached_command
+    
+    # 缓存未命中，调用模型生成命令
     system_prompt = get_system_prompt(shell)
     model = os.getenv("MODEL_NAME")
     
@@ -179,7 +193,27 @@ def chat_completion(client, query, shell):
         ],
         temperature=temperature,
         max_tokens=max_tokens)
+    
+    # 将生成的命令存储到缓存（仅对非重试查询）
+    if use_cache and not _is_retry_query(query):
+        cache.store_command(query, response, shell)
+    
     return response
+
+def _is_retry_query(query):
+    """
+    判断是否为重试查询（包含错误信息的查询不应被缓存）
+    参数:
+        query: 用户查询
+    返回:
+        是否为重试查询
+    """
+    retry_indicators = [
+        "重试", "retry", "失败", "failed", "错误", "error", 
+        "之前尝试", "执行结果", "详细输出信息", "原始任务"
+    ]
+    query_lower = query.lower()
+    return any(indicator in query_lower for indicator in retry_indicators)
 
 # 检查响应是否存在问题
 def check_for_issue(response):
@@ -271,8 +305,8 @@ def execute_command_with_error_handling(client, command, shell, ask_flag, origin
 重要提示: {retry_hints[retry_count % len(retry_hints)]}
 请生成一个完全不同的命令来完成任务，避免重复之前失败的方法。"""
                 
-                # 重新调用模型生成命令
-                new_response = chat_completion(client, error_context, shell)
+                # 重新调用模型生成命令（禁用缓存，因为这是错误重试）
+                new_response = chat_completion(client, error_context, shell, use_cache=False)
                 check_for_issue(new_response)
                 check_for_markdown(new_response)
                 
